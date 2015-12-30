@@ -1,0 +1,256 @@
+---
+title: "Practical Machine Learning Course Project Write Up"
+author: "Chai Chuan Yen"
+date: "Sunday, December 27, 2015"
+output: html_document
+---
+
+##Prediction Assignment Write Up
+####Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+####Data Description
+
+The training data for this project are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
+
+The test data are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+
+The data for this project come from this source: [http://groupware.les.inf.puc-rio.br/har]. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source:
+http://groupware.les.inf.puc-rio.br/har
+
+We first download the data from the links referenced above to our computer and upload the files into R (using RStudio), interpreting the miscellaneous NA, #DIV/0! and empty fields as NA:
+
+```{r}
+setwd("C:/Users/COMPAQ/data/Practical Machine Learning")
+training <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testing  <- read.csv("pml-testing.csv",  na.strings = c("NA", "#DIV/0!", ""))
+```
+
+We take a quick look at the data and particularly at classe which is the variable we need to predict:
+```{r}
+str(training, list.len=15)
+```
+
+```{r}
+table(training$classe)
+```
+
+```{r}
+prop.table(table(training$user_name, training$classe), 1)
+```
+
+```{r}
+prop.table(table(training$classe))
+```
+
+Based on the above information, let's first do some basic data clean-up by removing columns 1 to 6, which are there just for information and reference purposes:
+
+```{r}
+training <- training[, 7:160]
+testing  <- testing[, 7:160]
+```
+
+and removing all columns that are mostly NA:
+
+```{r}
+is_data  <- apply(!is.na(training), 2, sum) > 19621  # which is the number of observations
+training <- training[, is_data]
+testing  <- testing[, is_data]
+```
+
+Before we can move forward with data analysis, we split the training set into two for cross validation purposes. We randomly subsample 60% of the set for training purposes (actual model building), while the 40% remainder will be used only for testing, evaluation and accuracy measurement.
+
+```{r}
+library(caret)
+```
+
+```{r}
+set.seed(3141592)
+inTrain <- createDataPartition(y=training$classe, p=0.60, list=FALSE)
+train1  <- training[inTrain,]
+train2  <- training[-inTrain,]
+dim(train1)
+```
+
+```{r}
+dim(train2)
+```
+
+The caret library that we are using can be either loaded directly from CRAN using the command install.packages("caret") in R, or downloaded from the caret website. The website also includes a somewhat comprehensive documentation.
+
+At this stage, train1 is the training data set (it contains 11776 observations, or about 60% of the entire training data set), and train2 is the testing data set (it contains 7846 observations, or about 40% of the entire training data set). The dataset train2 will never be looked at, and will be used only for accuracy measurements.
+
+We can now [i] identify the "zero covariates"" from train1 and [ii] remove these "zero covariates"" from both train1 and train2:
+
+```{r}
+nzv_cols <- nearZeroVar(train1)
+if(length(nzv_cols) > 0) {
+  train1 <- train1[, -nzv_cols]
+  train2 <- train2[, -nzv_cols]
+}
+dim(train1)
+```
+
+```{r}
+dim(train2)
+```
+
+This step didn't do anything as the earlier removal of NA was sufficient to clean the data. We are satisfied that we now have 53 clean covariates to build a model for classe (which is the 54th column of the data set).
+
+###Data Manipulation
+53 covariates is a lot of variables. Let's look at their relative importance using the output of a quick Random Forest algorithm (which we call directly using randomForest() rather than the caret package purely for speed purposes as we cannot specify the number of trees to use in caret), and plotting data importance using varImpPlot():
+
+```{r}
+library(randomForest)
+```
+
+```{r}
+set.seed(3141592)
+fitModel <- randomForest(classe~., data=train1, importance=TRUE, ntree=100)
+varImpPlot(fitModel)
+```
+
+Using the Accuracy and Gini graphs above, we select the top 10 variables that we'll use for model building. If the accuracy of the resulting model is acceptable, limiting the number of variables is a good idea to ensure readability and interpretability of the model. A model with 10 parameters is certainly much more user friendly than a model with 53 parameters.
+
+Our 10 covariates are: yaw_belt, roll_belt, num_window, pitch_belt, magnet_dumbbell_y, magnet_dumbbell_z, pitch_forearm, accel_dumbbell_y, roll_arm, and roll_forearm.
+
+Let's analyze the correlations between these 10 variables. The following code calculates the correlation matrix, replaces the 1s in the diagonal with 0s, and outputs which variables have an absolute value correlation above 75%:
+
+```{r}
+correl = cor(train1[,c("yaw_belt","roll_belt","num_window","pitch_belt","magnet_dumbbell_z","magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm","roll_forearm")])
+diag(correl) <- 0
+which(abs(correl)>0.75, arr.ind=TRUE)
+```
+
+So we may have a problem with roll_belt and yaw_belt which have a high correlation (above 75%) with each other:
+
+```{r}
+cor(train1$roll_belt, train1$yaw_belt)
+```
+
+These two variables are on top of the Accuracy and Gini graphs, and it may seem scary to eliminate one of them. Let's be bold and without doing any PCA analysis, we eliminate yaw_belt from the list of 10 variables and concentrate only on the remaining 9 variables.
+
+By re-running the correlation script above (eliminating yaw_belt) and outputting max(correl), we find that the maximum correlation among these 9 variables is 50.57% so we are satisfied with this choice of relatively independent set of covariates.
+
+
+We can identify an interesting relationship between roll_belt and magnet_dumbbell_y:
+
+```{r}
+qplot(roll_belt, magnet_dumbbell_y, colour=classe, data=train1)
+```
+
+This graph suggests that we could probably categorize the data into groups based on roll_belt values.
+
+Incidentally, a quick tree classifier selects roll_belt as the first discriminant among all 53 covariates (which explains why we have eliminated yaw_belt instead of roll_belt, and not the opposite: it is a "more important" covariate):
+
+```{r}
+library(rpart.plot)
+```
+
+```{r}
+fitModel <- rpart(classe~., data=train1, method="class")
+prp(fitModel)
+```
+
+However, we will not investigate tree classifiers further as the Random Forest algorithm will prove very satisfactory.
+
+###Modeling
+
+We are now ready to create our model.
+We are using a Random Forest algorithm, using the train() function from the caret package.
+We are using 9 variables out of the 53 as model parameters. These variables were among the most significant variables generated by an initial Random Forest algorithm, and are roll_belt, num_window, pitch_belt, magnet_dumbbell_y, magnet_dumbbell_z, pitch_forearm, accel_dumbbell_y, roll_arm, and roll_forearm. These variable are relatively independent as the maximum correlation among them is 50.57%.
+We are using a 2-fold cross-validation control. This is the simplest k-fold cross-validation possible and it will give a reduced computation time. Because the data set is large, using a small number of folds is justified.
+
+The above line of code required 5.2 minutes to execute on a nicely configured Windows 7 64-Bit Sager NP2650 laptop with one i7-4700MQ processor, 6MB L3 cache, 2.40GHz, and 16GB dual channel DDR3 SDRAM at 1600MHz (selecting all 53 variables would increase this time to 7.1 minutes, an increase of 37%, without increasing the accuracy of the model), so we may want to save the model generated for later use:
+
+```{r}
+saveRDS(fitModel, "modelRF.Rds")
+```
+
+We can later use this tree, by allocating it directly to a variable using the command:
+
+```{r}
+fitModel <- readRDS("modelRF.Rds")
+```
+
+(Note that the modelRF.Rds file uses more than 50M of space on our disk. We are talking about a seriously large file, containing lots of data, about 5 times the size of the training set on the disk)
+
+
+####How accurate is this model?
+We can use caret's confusionMatrix() function applied on train2 (the test set) to get an idea of the accuracy.
+
+We obtained a number of 99.77%, which is a very impressive number for accuracy which totally validates the idea / hypothesis we made to eliminate most variables and use only 9 relatively independent covariates.
+
+
+Estimation of the out-of-sample error rate
+The train2 test set was removed and left untouched during variable selection, training and optimizing of the Random Forest algorithm. Therefore this testing subset gives an unbiased estimate of the Random Forest algorithm's prediction accuracy (99.77% as calculated above). The Random Forest's out-of-sample error rate is derived by the formula 100% - Accuracy = 0.23%.
+
+The out-of-sample error rate is 0.23%.
+
+We are now ready to answer Coursera's challenge and predict the 20 observations in testing (recall that testing corresponds to the data set pml-testing.csv)
+
+###Coursera Submission
+We predict the classification of the 20 observations of the testing data set for Coursera's "Course Project: Submission" challenge page:
+
+```{r}
+predictions <- predict(fitModel, newdata=testing)
+testing$classe <- predictions
+```
+
+We create one .CSV file with all the results, presented in two columns (named problem_id and classe) and 20 rows of data:
+
+```{r}
+submit <- data.frame(problem_id = testing$problem_id, classe = predictions)
+write.csv(submit, file = "coursera-submission.csv", row.names = FALSE)
+```
+
+And we create twenty .TXT file that we will upload one by one in the Coursera website (the 20 files created are called problem_1.txt to problem_20.txt):
+
+```{r}
+answers = testing$classe
+write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_",i,".txt")
+    write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+  }
+}
+write_files(answers)
+```
+
+###Further work with PCA
+
+We have not really investigated Principal Component Analysis after we dropped yaw_belt from the 10 covariates. This is outside the scope of this paper, and we are just giving below some code necessary to perform such analysis.
+
+The following pre-processes data in train1 to output the number of PCA components (and the corresponding weights for the covariates) necessary to capture 75% of the variance among all covariates except classe:
+
+```{r}
+preProc <- preProcess(train1[, -which(names(train1) == "classe")],
+                      method = "pca",
+                      thresh = 0.75)
+output <- preProc$rotation
+```
+
+This would calculate that we actually need 12 PCA components to capture 75% of the variance of the covariates in the data set.
+
+Once an acceptable number of PCA components has been found (by adjusting the explained variance threshold parameter), we can run a Random Forest tree. This code requires a much longer calculation time than the 9 variable Random Forest tree that we used, and it is unlikely to give a much better outcome given the accuracy already achieved. It is indeed quite a "brute force" algorithm. 
+
+###Conclusion
+In this assignment, we accurately predicted the classification of 20 observations using a Random Forest algorithm trained on a subset of data using less than 20% of the covariates.
+
+The accuracy obtained (accuracy = 99.77%, and out-of-sample error = 0.23%) is obviously highly suspicious as it is never the case that machine learning algorithms are that accurate, and a mere 85% if often a good accuracy result.
+
+Either the 6 participants for whom we have data were extraordinarily obedient (for more than 19 thousand observations, a strong performance! This however might be explained by the highly controlled conditions of the data collection), or the data was somehow doctored for this class, or additional testing needs to be performed on other different participants, or Fitbit really works!
+
+It may be interesting to apply the fitModel tree from the Random Forest algorithm obtained in this paper (without any re-calibration) to a completely new set of participants, to complement and validate the analysis.
+
+This project was a very interesting introduction to practical machine learning, and opened up many doors in machine learning in R.
+
+
